@@ -1,0 +1,12 @@
+{
+ "extends": {
+  "config": "config/cluster.json",
+  "shape": "tp3-triangle-4k"
+ },
+ "notes": "lab arm of tp3-triangle-4k: prefix-cache retention every 2,048 tokens; prefill chunks of 2,000 tokens; context 524,288.",
+ "serve_options": {
+  "--long-prefill-token-threshold": "2000",
+  "--max-model-len": "524288",
+  "--prefix-cache-retention-interval": "2048"
+ }
+}

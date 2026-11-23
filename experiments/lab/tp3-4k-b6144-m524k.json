@@ -1,0 +1,12 @@
+{
+ "extends": {
+  "config": "config/cluster.json",
+  "shape": "tp3-triangle-4k"
+ },
+ "notes": "lab arm of tp3-triangle-4k: prefill budget 6,144 with chunks of 6,096; context 524,288.",
+ "serve_options": {
+  "--long-prefill-token-threshold": "6096",
+  "--max-model-len": "524288",
+  "--max-num-batched-tokens": "6144"
+ }
+}

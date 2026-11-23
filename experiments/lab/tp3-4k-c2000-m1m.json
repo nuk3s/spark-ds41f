@@ -1,0 +1,11 @@
+{
+ "extends": {
+  "config": "config/cluster.json",
+  "shape": "tp3-triangle-4k"
+ },
+ "notes": "lab arm of tp3-triangle-4k: prefill chunks of 2,000 tokens; context 1,048,576.",
+ "serve_options": {
+  "--long-prefill-token-threshold": "2000",
+  "--max-model-len": "1048576"
+ }
+}

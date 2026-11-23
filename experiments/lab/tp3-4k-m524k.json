@@ -1,0 +1,10 @@
+{
+ "extends": {
+  "config": "config/cluster.json",
+  "shape": "tp3-triangle-4k"
+ },
+ "notes": "lab arm of tp3-triangle-4k: context 524,288.",
+ "serve_options": {
+  "--max-model-len": "524288"
+ }
+}
