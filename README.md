@@ -1,3 +1,204 @@
+# Fork notes
+
+This repository, `nuk3s/spark-ds41f`, is one site's working copy of the recipe in
+[`christopherowen/spark-ds41f`](https://github.com/christopherowen/spark-ds41f), called upstream
+in this section. "The vLLM fork" means `local-inference-lab/vllm`, the vLLM source that upstream
+pins. Branch `lab` starts from the release tag
+[`spark-ds41f-1120`](https://github.com/christopherowen/spark-ds41f/releases/tag/spark-ds41f-1120)
+(commit `d3d40d94`), called the tag in this section. Nothing has been submitted upstream.
+
+The site runs three DGX Spark nodes (GB10, 128 GB of unified memory a node) at tensor parallel 3
+(TP3) over a RoCE triangle. spark1 is the head. The nodes run the stock 4 KiB-page kernel
+`7.0.0-1019-nvidia` with driver 580.178.04, so the site runs upstream's 4 KiB shape
+`tp3-triangle-4k`. The 64 KiB-page kernel of upstream's shape `tp3-triangle` was not tested on the
+site.
+
+At the tag, `tp3-triangle-4k` serves 262,144 tokens with a 2.2 GiB KV pool a rank. The arms in
+`experiments/lab/` try the 1,048,576-token context and the 6,144-token prefill budget of
+`tp3-triangle` on the 4 KiB shape, and larger KV pools. On the site a 960,824-token prompt filled
+in 140.4 s. Pools of 2.7 and 3.2 GiB kept 10 and 11 of 18 long sessions, against 8 at the tag's
+sizing. The cost is head memory: the head's lowest `MemAvailable` during a start was 7.12, 6.56
+and 5.56 GiB at pools of 2.2, 2.7 and 3.2 GiB. As of
+2026-11-23T00:04Z, the arm `tp3-4k-b6144-m1m-kv35` (3.5 GiB a rank) had served the site's client
+traffic through an API gateway since 2026-11-22T15:52Z (the trial).
+
+| Branch | Content |
+| --- | --- |
+| `lab` | The tag plus three commits: the arms, the documents and these notes. `lab` stays on the tag until a rebase onto upstream `main` is tested, and a rebase changes the commit hashes of `lab` |
+| `main` | Upstream `main` as last synced, with no commits of this repository |
+| `kvtier` | A disk tier for the KV cache, in preparation and not published |
+
+## Differences from the tag
+
+| Path | Change | Content |
+| --- | --- | --- |
+| `README.md` | changed | This section, above upstream's text |
+| [`PROGRESS.md`](PROGRESS.md) | added | Dated log of the runs on 2026-11-21 and 2026-11-22, newest first, with the setup and the open questions |
+| [`docs/lab/findings.md`](docs/lab/findings.md) | added | Results kept as a reference, each with the conditions and the method, and the gaps in coverage |
+| [`docs/lab/upstream-candidates.md`](docs/lab/upstream-candidates.md) | added | Items that could go upstream, and the form each item would take |
+| [`experiments/lab/README.md`](experiments/lab/README.md) | added | The arm settings, the arms that ran and the site settings outside the arms |
+| `experiments/lab/tp3-4k-*.json` | added | 34 arms: overlays of the shape `tp3-triangle-4k` in the recipe's format (`docs/lab.md`) that change serving flags in `serve_options` only |
+| `experiments/lab/make_arms.py` | added | Writes the 34 arms; `--check` lists the arms and writes nothing; standard library only |
+| Every other path | unchanged | `config/cluster.json`, `bin/spark`, `scripts/`, `spark_ds41f/`, `docker/`, `upstreams.lock.json` (the vLLM pin and candidate-62's patch series), `LICENSE` and the rest of the tree. The model pin is the tag's: DeepSeek-V4.1-Flash-1017 at revision `1bae0e10`. The site built the image from source at the tag, on one node in 19 minutes |
+
+Commands for a clone of this repository:
+
+```sh
+git remote add upstream https://github.com/christopherowen/spark-ds41f.git
+git fetch upstream main tag spark-ds41f-1120
+git diff --name-status spark-ds41f-1120 origin/lab
+git log --oneline spark-ds41f-1120..origin/lab
+git rev-list --count spark-ds41f-1120..upstream/main
+```
+
+Read at 2026-11-23T01:14Z, upstream `main` was 86 commits past the tag. The newest commit promotes
+`spark-ds41f-1122`, which had no GitHub release at that time. No arm has run on 1122.
+
+## Serving settings
+
+Start the arm `tp3-4k-b6144-m1m-kv35`:
+
+```sh
+bin/spark --cluster-config experiments/lab/tp3-4k-b6144-m1m-kv35.json cluster start --apply
+```
+
+Without `--apply`, the command prints a plan; read the `live:` and `shape:` lines first. A
+`spark-ds41f` container, running or stopped, needs `--replace` (`cluster stop` keeps the container
+without `--remove`). A `shape:` line of `CHANGES` needs `--change-shape` as well (`docs/lab.md`,
+the `measure` entry).
+
+| Flag | At the tag (`tp3-triangle-4k`) | Values in the arms | On the site |
+| --- | --- | --- | --- |
+| `--max-num-batched-tokens` (the budget) | 4096 | 6144 | 6144, the value of `tp3-triangle` (upstream's 64 KiB-page shape) |
+| `--long-prefill-token-threshold` | 4048 (the budget minus 48 decode tokens, 8 sequences × (1 + 5 drafts), by `scripts/recipe.py`) | 6096 (with 6144), 2000 | 6096 |
+| `--max-model-len` (the context) | 262144 | 393216, 524288, 786432, 1048576 | 1048576, the value of `tp3-triangle` |
+| `--kv-cache-memory-bytes` (the pool, a rank) | 2.2 GiB | 2.7, 3.2, 3.5, 3.7, 4.0 GiB | 3.5 GiB, one step above 3.2 GiB, the largest pool tested before the trial; kept because the head's lowest `MemAvailable` in the four-session probe, 5,207 MiB (5.08 GiB), stayed above the steady guard of 3 GiB |
+| `--prefix-cache-retention-interval` | 512 | 2048 | 512 |
+
+Started in a clone, an arm runs the clone's own `config/cluster.json` at `tp3-triangle-4k` with
+the arm's flag values. The site's edits of that file, the host settings and the gateway are not in
+the repository, so a clone runs without any of the three. No arm has run with the tag's unedited
+file. The arms are outside upstream's qualification of `tp3-triangle-4k`. Nine of the 34 arms ran
+(`experiments/lab/README.md`, "Arms that ran"); the 3.7 and 4.0 GiB pool arms and 23 others have
+not run.
+
+Every site measurement on this page ran the release image `spark-ds41f:1120`, never a candidate,
+at `tp3-triangle-4k`, with the arm or the setting named. The arm values and the host settings are
+the site's own and belong to no upstream release. Memory figures are GiB of 1,024 MiB.
+
+Measurements of the tuning window on 2026-11-22, 02:53Z to 06:20Z:
+
+| Setting | Measurement | Result | At the tag's value |
+| --- | --- | --- | --- |
+| Budget 6144, threshold 6096 | Cold prefill of 131K tokens, the slower of two runs; decode; the head's lowest `MemAvailable` | 18.2 s; decode unchanged; 0.5 GiB lower, over different loads (seven measurements at 6144 against a six-session revisit at 4096) | 20.2 s at 4096 |
+| Threshold 2000 | The same prefill | 28.1 s | 20.2 s at 4048 |
+| Context 1048576, budget 6144, 2.2 GiB pool | Start; fill of a 960,824-token prompt with a planted code | 201 s; 140.4 s, code found | — |
+| Contexts 393216, 524288 and 1048576, budget 6144, 2.2 GiB pool | The head's lowest `MemAvailable` over a start, a long prompt, a 131K prefill, a decode measurement and (at 524288 and 1048576) a warm turn | 6.26, 6.14 and 6.15 GiB | — |
+| Pools 2.2, 2.7 and 3.2 GiB, context 1048576, budget 6144 | The head's lowest `MemAvailable` during a start, one start a pool | 7.12, 6.56 and 5.56 GiB | — |
+| Pools 2.7 and 3.2 GiB, context 1048576, budget 6144 | Long sessions kept in the prefix cache, of 18 | 10 and 11 | 8 at 2.2 GiB, context 262144, budget 4096 |
+| Pool 3.5 GiB | Long sessions kept | not measured | — |
+| Retention 2048 | Sessions kept, of 18; warm turn on a 131K session | 9; 0.78 s | 8 and 0.57 s at 512 |
+
+Conditions: one engine restart a setting, requests direct to the engine, no other traffic, one
+run a row unless the row says otherwise. Between windows, the same shape's cold 131K prefill read
+22.2 and 20.2 s, so no row mixes windows. The probes are the site's own, not suites of
+`config/suites/`, and the scripts and raw run records are not published.
+
+Head memory on the 3.5 GiB pool, from the trial:
+
+| Load | Lowest `MemAvailable` on the head | Guard in the recipe |
+| --- | --- | --- |
+| Start: one start, after the host changes of 2026-11-22 (host table below) | 6.13 GiB, 0.57 GiB above the one 3.2 GiB start | Startup guard, 5 GiB |
+| Probe: four sessions of 499.5K tokens at once, no other traffic | 5.08 GiB | Steady guard, 3 GiB |
+| Client traffic, 480 one-minute samples from 15:59Z to 2026-11-23T00:04Z, with the site's direct tests beside from 16:05Z to 19:20Z | 4.15 GiB; median 4.97 GiB | Steady guard, 3 GiB |
+
+Head memory in the bench of `tp3-triangle-4k`:
+
+| Run | Image | Kernel | `vm.min_free_kbytes` | The head's lowest `MemAvailable` |
+| --- | --- | --- | --- | --- |
+| Upstream's reference record (`manifests/benchmarks/2026-11-20-spark-ds41f-1120-tp34k.json`) | `spark-ds41f:candidate-61-r2`, with the overlay `experiments/2026-11-16-c61-decode/tp3-triangle-4k-dev.json` | `7.0.0-1019-nvidia-64k`, 64 KiB pages, on all three nodes; `identity.live_warnings` for dgx1, and the same for dgx2 and dgx3: `dgx1: serving profile recommends 7.0.0-1019-nvidia / 4096-byte pages; running '7.0.0-1019-nvidia-64k' / 65536` | 45,166 kB, set by upstream's host profile on 64 KiB (`host/kernel-memory/README.md`); not a field of the record | 11.28 GiB (`memory.dgx1.min_available_gib`), the figure in upstream's README |
+| The site's three runs, no arm | `spark-ds41f:1120` | `7.0.0-1019-nvidia`, 4 KiB pages | 1 GiB (1,048,576 kB) | 7.39, 7.11 and 7.65 GiB |
+
+A larger reserve lowers `MemAvailable` at equal use. The readings differ in the page size, the
+image, the reserve and the site settings below, and the share of each was not measured. The head
+margins on this page therefore do not carry to another site.
+
+## Site settings outside the repository
+
+The site's `config/cluster.json` is edited at deploy time and not published. Besides node
+addresses and deployment locations, the edits are:
+
+| Setting | At the tag | On the site | Reason and effect |
+| --- | --- | --- | --- |
+| `SPARK_DS41F_DISPLAY_CARVEOUT_WEIGHTS` on `tp3-triangle-4k` | `"1"`, inherited from `tp3-triangle` | `"0"` | The site's display carve-out is 0.5 GB (next table). Patch `0021` places the embedding and the output head there, 842.5 MiB a rank in the patch's description (`patches/vllm/README.md`). The worker refuses to start when the carve-out cannot hold the two tables |
+| `NCCL_IB_GID_INDEX` in `tp3-triangle` | `"3"` | removed | NCCL and sparknet 0.5.0 take each device's one IPv4 RoCE v2 GID in the cable subnet (`docs/switchless-topology.md`), so the hosts' RoCE state stays unchanged. Every multi-node shape at the tag pins slot 3, so the setting is outside what upstream qualifies |
+| `glp` | present | removed | The engine serves `deepseek-v4.1-flash` only, without the steered name `deepseek-v4.1-flash-weightless`. The GLP vector sits in a gated Hugging Face repository |
+| `host.fan_control` | absent, default `true` | `false` | A site choice. With `false`, `bin/spark bench` skips the pre-cool and the performance fan curve (`spark_ds41f/bench.py`) |
+
+Host and gateway settings:
+
+| Setting | At the tag | On the site | Note |
+| --- | --- | --- | --- |
+| UEFI Display Reserved Memory, the size of the display carve-out | the firmware's default; the default size was not read on the site | 0.5 GB | `MemTotal` 123.18 GiB, 1.495 GiB more than with the default. The net effect on the head's memory of the 0.5 GB carve-out with carve-out weights off was not measured |
+| `nvidia-drm` mode setting | required for TP3, because carve-out weights need mode setting (`docs/setup.md`) | off | Serving starts with carve-out weights off. `doctor --live` warns on each node. The run at 2026-11-22T15:37Z ended `configuration OK; live cluster matches with 101 warnings`. Most of the warnings concern the 64 KiB-page kernel, which the site has not installed. The others include NVMe coalescing and APST, `nvidia-drm` mode setting, the console in graphics mode, the Wi-Fi radio setting and weight-shard fragmentation |
+| `vm.min_free_kbytes` | the kernel's value on 4 KiB; 45,166 kB on 64 KiB, which `host/kernel-memory/README.md` gives as the reserve observed on the original 4 KiB profile | 1 GiB, a site policy | See the head-memory comparison above |
+| `earlyoom` | not configured | on each node, SIGKILL at 2,560 MiB of `MemAvailable` | Below the recipe's steady guard of 3 GiB |
+| Idle services on a headless node | off; `doctor --live` warns on each node where one runs (`docs/setup.md`, "Headless boot: the trade-off"; `spark_ds41f/doctor.py`) | twelve services off since 2026-11-22T13:45Z | On during the three bench runs below |
+| NVMe APST timeouts | 2 s and 60 s, recommended (`docs/setup.md`) | 2 s and 60 s since 2026-11-22T15:41Z | The kernel's 100 ms and 2,000 ms during the three bench runs |
+| NVMe interrupt coalescing | off, optional (`docs/setup.md`) | on | On during the three bench runs |
+| Images a request | 67 (`--limit-mm-per-prompt`) | the newest 8, cut at the gateway; an older image becomes a short text marker | The head's API server decodes images in host memory. The effect of the limit on head memory was not measured |
+| Reasoning effort `high` | 75 on the engine's scale of 1 to 100 | 50, set at the gateway since 2026-11-22T19:17Z | Six hard tasks, 5 runs each, with client traffic beside: 30 of 30 runs pass at 50 and at 75. Over 30 pairs matched on task and seed, the median ratio of reasoning tokens, 50 to 75, is 0.74 ([`docs/lab/findings.md`](docs/lab/findings.md)) |
+
+## Measurements and limits
+
+| Item | Reading or state |
+| --- | --- |
+| Host uptime before the starts | More than a week: at 2026-11-22T15:55Z, a container on each node had run for 3 weeks (spark1, spark2) and 9 days (spark3) |
+| The head's `MemAvailable` with no engine running | 113.56 to 115.51 GiB (six readings, 2026-11-21T22:59Z to 2026-11-22T15:41Z) |
+| The head's lowest `MemAvailable` during a start | 5.56 to 7.32 GiB over the ten arm starts, the only starts with a reading during the start; every start passed the startup guard |
+| A restart after many days of engine uptime | Not run. Upstream issue [#1272](https://github.com/christopherowen/spark-ds41f/issues/1272) reports, at another site, the head's `MemAvailable` before a start falling with host uptime |
+| The API server's RSS on the trial's engine | 1,431 MiB at 15:55Z to 1,826 MiB at 23:53Z, in steps |
+| Requests of the trial that ended on an error, an abort or a repetition stop | None of the 4,333 requests that finished from the engine's start to 2026-11-23T00:04Z, by the engine's counters; the count includes the site's own test requests |
+| Exposure to the Engram row-reader fault reported on 1120 in issue [#1036](https://github.com/christopherowen/spark-ds41f/issues/1036), at budget 6144 and threshold 6096 | Not tested |
+| Answer quality | Program-graded checks: planted codes 6 of 6, tool scenarios 5 of 6, long-context coding tickets 17 of 17. A battery of multi-turn tool tasks at `high`, 2 runs an item: 35 of the 46 planned runs were scored before the window ended. 25 of 34 runs passed, with each stop at the battery's wall counted as a failure; one more run ended at the client's 900 s HTTP timeout and is not counted. Entries of 2026-11-22 02:53Z and 06:47Z in [`PROGRESS.md`](PROGRESS.md) |
+
+Three runs of `bin/spark bench` on 2026-11-22 used `tp3-triangle-4k` with no arm, the site's
+edited `config/cluster.json` and the default suites `quality` and `decode`. No bench has run on an
+arm.
+
+| Start (UTC) | `quality` | `decode` rows marked slower (95% interval below the reference record) | Gap in the slower rows | Gap in all 8 rows (aggregate tok/s, prose and code at 1, 2, 4 and 8 streams) |
+| --- | --- | --- | --- | --- |
+| 00:47 | 5 of 5 | 4 of 8 | 3.6% to 6.3% | 3.6% to 8.4% |
+| 03:23 | 5 of 5 | 4 of 8 | 4.1% to 6.3% | 1.0% to 6.3% |
+| 06:47 | 5 of 5 | 4 of 8 | 3.1% to 4.0% | 0.9% to 4.3% |
+
+The bench exited 1 on the gap each time; the cause is not known. Besides the site settings above,
+the reference record differs in the image and the kernel (head-memory table). With
+`host.fan_control` false, the site's bench records hold empty `cooling` and `fan_curve` lists. The
+reference record shows the fan curve already running on the three nodes. The GPUs reached at most
+64 °C, with no thermal slowdown.
+
+## Work for upstream
+
+[`docs/lab/upstream-candidates.md`](docs/lab/upstream-candidates.md) gives the form that each item
+would take, and each item needs a rebase onto upstream `main` first.
+
+| Item | State |
+| --- | --- |
+| Seven patches to the vLLM fork for a disk tier of the KV cache | Tested on a CPU-only machine; no engine has started with the tier. Branch `kvtier`, not published. No test figure appears here: upstream asks that numbers from unreleased work stay out of a fork's README (`AGENTS.md`, "Hold benchmarks of unreleased work") |
+| A cap on external prefix hits in the vLLM fork's offload connector | Patch 0832 of the seven, with the test of patch 0836, run on a CPU-only machine. No shape at the tag sets a KV transfer configuration, so no released shape takes that path |
+| Four documentation notes: the head's start margin at larger pools, a 1M context on `tp3-triangle-4k`, the values of the reasoning effort, and the site's bench readings | Drafted in `docs/lab/upstream-candidates.md` |
+| Notes on upstream issues [#1036](https://github.com/christopherowen/spark-ds41f/issues/1036) and [#1272](https://github.com/christopherowen/spark-ds41f/issues/1272) | Drafted in `docs/lab/upstream-candidates.md` |
+
+## License of the added files
+
+This repository is under the Apache License 2.0, as upstream is. [`LICENSE`](LICENSE) is unchanged
+from the tag and covers the added files.
+
+The README of the tag `spark-ds41f-1120` follows unchanged.
+
+---
+
 # spark-ds41f
 
 **DeepSeek V4.1 Flash on DGX Sparks. No switch required.\***
